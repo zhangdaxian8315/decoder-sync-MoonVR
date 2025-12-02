@@ -14,11 +14,12 @@ DECODER_LIB="libxavc3ddecoder.a"
 WRAPPER_FILE="avc3ddecoder.c"   # ← 你实际的名字替换这个
 
 # 文件在 VLC-Android 中的存放位置（根据你项目调整）
-VLC_DECODER_DIR="$VLC_ANDROID_DIR/extras/decoder"
-VLC_WRAPPER_DIR="$VLC_ANDROID_DIR/extras/decoder"
+VLC_DECODER_DIR="$VLC_ANDROID_DIR/libvlcjni/vlc/contrib/aarch64-linux-android/lib/"
+VLC_WRAPPER_DIR="$VLC_ANDROID_DIR"/libvlcjni/vlc/contrib/contrib-android-aarch64-linux-android/ffmpeg/libavcodec/
+
 
 # VLC 输出 AAR 的位置（请改成你真实的路径）
-AAR_OUTPUT="$VLC_ANDROID_DIR/vlc-android/app/build/outputs/aar/app-release.aar"
+AAR_OUTPUT="$VLC_ANDROID_DIR/libvlcjni/libvlc/build/outputs/aar/libvlc-release.aar"
 
 # 回传 AAR 到 GitHub 仓库的文件名
 OUTPUT_AAR_NAME="libvlc-release.aar"
@@ -43,7 +44,7 @@ echo "=============================================="
 cd "$VLC_ANDROID_DIR"
 
 # 你把下面这行换成你真实的 VLC 构建命令
-./buildsystem/compile.sh
+# sh ../r1.sh
 
 echo "VLC 编译完成！"
 
