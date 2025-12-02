@@ -15,10 +15,9 @@ WRAPPER_FILE="avc3ddecoder.c"   # ← 你实际的名字替换这个
 
 # 文件在 VLC-Android 中的存放位置（根据你项目调整）
 VLC_DECODER_DIR="$VLC_ANDROID_DIR/libvlcjni/vlc/contrib/aarch64-linux-android/lib/"
-VLC_WRAPPER_DIR="$VLC_ANDROID_DIR"/libvlcjni/vlc/contrib/contrib-android-aarch64-linux-android/ffmpeg/libavcodec/
+VLC_WRAPPER_DIR="$VLC_ANDROID_DIR/libvlcjni/vlc/contrib/contrib-android-aarch64-linux-android/ffmpeg/libavcodec/"
 
-
-# VLC 输出 AAR 的位置（请改成你真实的路径）
+# VLC 输出 AAR 的位置
 AAR_OUTPUT="$VLC_ANDROID_DIR/libvlcjni/libvlc/build/outputs/aar/libvlc-release.aar"
 
 # 回传 AAR 到 GitHub 仓库的文件名
@@ -26,12 +25,28 @@ OUTPUT_AAR_NAME="libvlc-release.aar"
 
 
 echo "=============================================="
+echo "       0. 从 GitHub 拉取最新代码 (git pull)"
+echo "=============================================="
+
+cd "$REPO_DIR"
+
+echo "当前目录: $REPO_DIR"
+echo "执行: git pull --ff-only"
+
+git fetch origin main
+
+# 强制 fast-forward 合并，确保干净、不会覆盖本地修改
+git pull --ff-only origin main
+
+echo "Git 更新完成"
+
+
+echo "=============================================="
 echo "   1. 复制 decoder + wrapper 文件到 VLC-Android"
 echo "=============================================="
 
 mkdir -p "$VLC_DECODER_DIR"
-
-cp "$REPO_DIR/$DECODER_LIB" "$VLC_DECODER_DIR/" 
+cp "$REPO_DIR/$DECODER_LIB" "$VLC_DECODER_DIR/"
 cp "$REPO_DIR/$WRAPPER_FILE" "$VLC_WRAPPER_DIR/"
 
 echo "复制完成！"
@@ -43,7 +58,7 @@ echo "=============================================="
 
 cd "$VLC_ANDROID_DIR"
 
-# 你把下面这行换成你真实的 VLC 构建命令
+# 你自己的编译命令：
 sh ../r1.sh
 
 echo "VLC 编译完成！"
