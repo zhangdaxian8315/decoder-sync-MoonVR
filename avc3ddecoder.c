@@ -181,8 +181,8 @@
 
 #if VLC_CHECK
      avctx->width = 1920;
-//     avctx->height = 1080*2;
-     avctx->height = 1088*2;
+     avctx->height = 1080*2;
+//     avctx->height = 1088*2;
      avctx->coded_width = 1920;
      avctx->coded_height = 1088*2; 
      avctx->framerate.num = 24000;
@@ -204,8 +204,8 @@
      avctx->framerate.num = 24000;
      avctx->framerate.den = 1001;
 
-//     s->yuv_size[0] = 1920 * 1080;
-     s->yuv_size[0] = 1920 * 1088;
+     s->yuv_size[0] = 1920 * 1080;
+//     s->yuv_size[0] = 1920 * 1088;
      s->yuv_size[1] = s->yuv_size[0] / 4;
      s->yuv_size[2] = s->yuv_size[0] / 4;
 
