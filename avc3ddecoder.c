@@ -2,515 +2,703 @@
  * AVC3D 解码器动态库 - FFmpeg 4.4 兼容版本
  */
 
-#include "libavcodec/avcodec.h"
-#include "libavformat/avformat.h"
-#include "libavutil/frame.h"
-#include "libavutil/pixfmt.h"
-#include "libavutil/mem.h"
-#include <stdio.h>
-#include <time.h>
-// #include <android/log.h>
-#include "ldecod_api.h"
-// 声明第三方解码器接口（已由外部定义）
+ #include "libavcodec/avcodec.h"
+ #include "libavformat/avformat.h"
+ #include "libavutil/frame.h"
+ #include "libavutil/pixfmt.h"
+ #include "libavutil/pixdesc.h"  // 用于 av_get_pix_fmt_name
+ #include "libavutil/mem.h"
+ #include <stdio.h>
+ #include <libavutil/motion_vector.h>
+ #include "ldecod_api.h"
 
-//#define LOGD(format,...) __android_log_print(ANDROID_LOG_DEBUG, LOGTAG, "%s " format, __func__, __VA_ARGS__)
+ 
+ 
+ #define VLC_CHECK  0
 
-/* ==== 统一调试日志宏 ==== */
-#define OLDAVC3D_TAG "[OLDAVC3D]"
-#define LOGI(fmt, ...)  printf(OLDAVC3D_TAG "[INFO] " fmt "\n", ##__VA_ARGS__)
-#define LOGE(fmt, ...)  printf(OLDAVC3D_TAG "[ERR ] " fmt "\n", ##__VA_ARGS__)
+ int g_num = 0;
 
-/* ==== 上下文结构体 ==== */
-typedef struct Avc3dDecoderContext {
-    void *decHandle;          // 第三方解码器句柄
-    AVFormatContext *fmt_ctx; // 输入格式上下文
-    AVPacket *buffer_pkt;     // 缓存数据包
-    AVFrame *buffer_frame;    // 缓存帧
-    int yuv_size[3];
-    int got_frame;            // 帧可用标志
-    int eof;                  // 结束标志
-    FILE* fp;
-} Avc3dDecoderContext;
 
-static int file_index = 1000;
+ // 解码器上下文结构体
+ typedef struct Avc3dDecoderContext {
+     void *decHandle;          // 第三方解码器句柄
+     AVFormatContext *fmt_ctx; // 输入格式上下文
+     AVPacket *buffer_pkt;     // 缓存数据包
+     AVFrame *buffer_frame;    // 缓存帧
+     DecFrame wFrame; //worked frame for buf copy and 
 
-/* ==== 工具：时间字符串 ==== */
-static
-char *
-unittime_string_1 (double t)
-{
-    static char  buf[128];
 
-    const char  *unit;
-    int         prec;
+     int yuv_size[3];
+     int got_frame;            // 帧可用标志
+     int eof;                  // 结束标志
+ 
+     // H264 解码器相关（FFmpeg默认软件解码器）
+     AVCodec *h264_codec;      // FFmpeg的H.264解码器
+     AVCodecContext *h264_ctx; // FFmpeg解码器上下文
+     AVFrame *h264_frame;      // FFmpeg解码后的帧
+     AVPacket *h264_pkt;       // 给FFmpeg的数据包
+     AVFrame *cached_frame;    // 缓存FFmpeg解码后的帧（供第三方解码器使用）
 
-    /* choose units and scale */
-    if (t < 1e-6)
-        t *= 1e9, unit = "ns";
-    else if (t < 1e-3)
-        t *= 1e6, unit = "us";
-    else if (t < 1.0)
-        t *= 1e3, unit = "ms";
-    else
-        unit = "s";
+    // 关键：H264 解码函数指针（替代直接调用 h264_decode_frame）
+    int (*h264_decode_func)(AVCodecContext *avctx, void *data, int *got_frame, AVPacket *avpkt);
+ 
+ } Avc3dDecoderContext;
+ 
+ 
+ static int calculate_yuv_component_sizes_2(AVCodecContext *avctx, int yuv_sizes[3])
+ {
+     printf("-----calculate_yuv_component_sizes 0------\n");
+     if (!avctx || !yuv_sizes) {
+         return AVERROR(EINVAL);
+     }
+ 
+     enum AVPixelFormat pix_fmt;
+     int width, height;
+ 
+     // 获取视频流参数
+     width = avctx->coded_width;
+     height = avctx->coded_height;
+#if VLC_CHECK
+     height = avctx->height/2;
+ #endif
+     pix_fmt = avctx->pix_fmt;
+ 
+     printf("pix_fmt = %d\n", pix_fmt);
+     
+     // 根据像素格式计算各分量大小
+     switch (pix_fmt) {
+         case AV_PIX_FMT_YUV420P:
+         case AV_PIX_FMT_YUVJ420P:
+         case AV_PIX_FMT_NV12:
+         case AV_PIX_FMT_NV21:
+             yuv_sizes[0] = width * height;         // Y分量
+             yuv_sizes[1] = yuv_sizes[0] / 4;       // U分量
+             yuv_sizes[2] = yuv_sizes[1];           // V分量
+             break;
+             
+         case AV_PIX_FMT_YUV422P:
+         case AV_PIX_FMT_YUVJ422P:
+         case AV_PIX_FMT_YUYV422:
+             yuv_sizes[0] = width * height;         // Y分量
+             yuv_sizes[1] = yuv_sizes[0] / 2;       // U分量
+             yuv_sizes[2] = yuv_sizes[1];           // V分量
+             break;
+             
+         case AV_PIX_FMT_YUV444P:
+         case AV_PIX_FMT_YUVJ444P:
+             yuv_sizes[0] = width * height;         // Y分量
+             yuv_sizes[1] = yuv_sizes[0];           // U分量
+             yuv_sizes[2] = yuv_sizes[1];           // V分量
+             break;
+             
+         case AV_PIX_FMT_YUVA420P:
+             yuv_sizes[0] = width * height;         // Y分量
+             yuv_sizes[1] = yuv_sizes[0] / 4;       // U分量
+             yuv_sizes[2] = yuv_sizes[1];           // V分量
+             break;
+             
+         default:
+             return -1;
+     }
+     
+     return 0;
+ }
+ 
 
-    /* want 4 significant figures */
-    if (t < 1.0)
-        prec = 4;
-    else if (t < 10.0)
-        prec = 3;
-    else if (t < 100.0)
-        prec = 2;
-    else
-        prec = 1;
+ // 初始化FFmpeg默认H.264解码器
+ static int init_ffmpeg_h264_decoder(Avc3dDecoderContext *s, AVCodecContext *avctx)
+ {
+     int ret;
+ 
+     // 查找FFmpeg默认H.264软件解码器
+     s->h264_codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+     if (!s->h264_codec) {
+         av_log(avctx, AV_LOG_ERROR, "找不到FFmpeg H.264解码器\n");
+         return AVERROR(ENOMEM);
+     }
+ 
+     // 初始化解码器上下文
+     s->h264_ctx = avcodec_alloc_context3(s->h264_codec);
+     if (!s->h264_ctx) {
+         av_log(avctx, AV_LOG_ERROR, "无法分配FFmpeg解码器上下文\n");
+         return AVERROR(ENOMEM);
+     }
+ 
+     // 复制当前解码器参数到FFmpeg解码器
+     s->h264_ctx->width = avctx->width;
+     s->h264_ctx->height = avctx->height;
+#if VLC_CHECK
+     s->h264_ctx->height = avctx->height/2;
+#endif
+     s->h264_ctx->coded_width = avctx->coded_width;
+     s->h264_ctx->coded_height = avctx->coded_height;
+     s->h264_ctx->pix_fmt = avctx->pix_fmt;
+     s->h264_ctx->framerate = avctx->framerate;
 
-    sprintf (buf, "%.*f%s", prec, t, unit);
-    return buf;
-}
+    // 关键：获取解码函数指针（替代直接调用 h264_decode_frame）
+    s->h264_decode_func = s->h264_codec->decode;
+     //s->h264_ctx->flags |= AV_CODEC_FLAG_LOW_DELAY; // 低延迟模式，减少缓存
+     //s->h264_ctx->max_b_frames = 0; // 禁用B帧，避免重排序
 
-/* ==== 计算 YUV 分量大小，并详细打印 ==== */
-static int calculate_yuv_component_sizes_2(AVCodecContext *avctx, int yuv_sizes[3])
-{
-    LOGI("[yuv] calculate_yuv_component_sizes_2 ENTER");
+     s->h264_ctx->flags2 |= AV_CODEC_FLAG2_EXPORT_MVS; //导出mv
+ 
+     // 打开解码器
+     ret = avcodec_open2(s->h264_ctx, s->h264_codec, NULL);
+     if (ret < 0) {
+         av_log(avctx, AV_LOG_ERROR, "无法打开FFmpeg H.264解码器: %s\n", av_err2str(ret));
+         avcodec_free_context(&s->h264_ctx);
+         return ret;
+     }
+ 
+     // 分配FFmpeg解码所需的帧和数据包
+     s->h264_frame = av_frame_alloc();
+     s->h264_pkt = av_packet_alloc();
+     s->cached_frame = av_frame_alloc();
+     if (!s->h264_frame || !s->h264_pkt || !s->cached_frame) {
+         av_log(avctx, AV_LOG_ERROR, "无法分配FFmpeg帧或数据包\n");
+         return AVERROR(ENOMEM);
+     }
+ 
+     av_log(avctx, AV_LOG_INFO, "FFmpeg H.264解码器初始化成功\n");
+     return 0;
+ }
+ 
 
-    if (!avctx || !yuv_sizes) {
-        LOGE("[yuv] invalid args: avctx=%p yuv_sizes=%p", avctx, yuv_sizes);
-        return AVERROR(EINVAL);
-    }
+ // 解码器初始化
+ static av_cold int avc3d_init(AVCodecContext *avctx)
+ {
+     Avc3dDecoderContext *s = avctx->priv_data;
+     int ret;
+     void *decoder_handle;
+ 
+     // 保存格式上下文
+     if (avctx->opaque) {
+         s->fmt_ctx = (AVFormatContext*)avctx->opaque;
+     } else {
+         av_log(avctx, AV_LOG_WARNING, "未提供AVFormatContext，可能影响解码效果\n");
+         s->fmt_ctx = NULL;
+     }
 
-    enum AVPixelFormat pix_fmt;
-    int width = 0, height = 0;
+#if VLC_CHECK
+     avctx->width = 1920;
+//     avctx->height = 1080*2;
+     avctx->height = 1088*2;
+     avctx->coded_width = 1920;
+     avctx->coded_height = 1088*2; 
+     avctx->framerate.num = 24000;
+     avctx->framerate.den = 1001;
+     avctx->pix_fmt = AV_PIX_FMT_YUV420P;
+#endif
+ 
+     // 计算YUV分量大小
+//     calculate_yuv_component_sizes_2(avctx, s->yuv_size);
+//     printf("enter avc3d_init 0001 ysize=%d, usize=%d, vsize=%d\n",
+//            s->yuv_size[0], s->yuv_size[1], s->yuv_size[2]);
 
-    /* 获取视频流参数（使用 coded_*） */
-    width  = avctx->coded_width;
-    height = avctx->coded_height;
-    pix_fmt = avctx->pix_fmt;
+// --- 写死 AVC3D 蓝光参数（旧版做法） ---
+     avctx->width  = 1920;
+     avctx->height = 1080 * 2;     // top-bottom
+     avctx->coded_width  = 1920;
+     avctx->coded_height = 1088 * 2; // 1088 = H.264 对齐
+     avctx->pix_fmt = AV_PIX_FMT_YUV420P;
+     avctx->framerate.num = 24000;
+     avctx->framerate.den = 1001;
 
-    LOGI("[yuv] input avctx: width=%d height=%d coded_width=%d coded_height=%d pix_fmt=%d",
-         avctx->width, avctx->height, avctx->coded_width, avctx->coded_height, pix_fmt);
+//     s->yuv_size[0] = 1920 * 1080;
+     s->yuv_size[0] = 1920 * 1088;
+     s->yuv_size[1] = s->yuv_size[0] / 4;
+     s->yuv_size[2] = s->yuv_size[0] / 4;
 
-    printf("-----calculate_yuv_component_sizes 0------\n");
-    printf("pix_fmt = %d\n", pix_fmt);
+     printf("enter avc3d_init FIXED yuv=%d,%d,%d\n",
+            s->yuv_size[0], s->yuv_size[1], s->yuv_size[2]);
 
-    // 根据像素格式计算各分量大小
-    switch (pix_fmt) {
-    case AV_PIX_FMT_YUV420P:
-    case AV_PIX_FMT_YUVJ420P:
-    case AV_PIX_FMT_NV12:
-    case AV_PIX_FMT_NV21:
-        yuv_sizes[0] = width * height;         // Y分量
-        yuv_sizes[1] = yuv_sizes[0] / 4;       // U分量
-        yuv_sizes[2] = yuv_sizes[1];           // V分量
-        break;
+     // 初始化第三方解码器
+     decoder_handle = xavc3d_decode_init(s->yuv_size);
+     if (!decoder_handle) {
+         av_log(avctx, AV_LOG_ERROR, "第三方解码器初始化失败\n");
+         return AVERROR(ENOMEM);
+     }
+     s->decHandle = decoder_handle;
+  ////////////////////////////////////////////////////////////////////////
+  //init wframe
+     for(int i = 0; i< INPUT_REF_LEN; i++)
+     {
+       s->wFrame.inputRef[i].data[0] = (unsigned char *)malloc(s->yuv_size[0]); 
+       s->wFrame.inputRef[i].data[1] = (unsigned char *)malloc(s->yuv_size[1]); 
+       s->wFrame.inputRef[i].data[2] = (unsigned char *)malloc(s->yuv_size[2]); 
+       s->wFrame.inputRef[i].inuse = 0;
+       //init mv
+       s->wFrame.inputRef[i].pmv = (RefMv *)malloc(s->yuv_size[0]/(4*4)*sizeof(RefMv));
+       //RefMv
+     }
+     // 分配内部缓存
+     s->buffer_pkt = av_packet_alloc();
+     s->buffer_frame = av_frame_alloc();
+     if (!s->buffer_pkt || !s->buffer_frame) {
+         xavc3d_decode_close(&s->decHandle);
+         av_packet_free(&s->buffer_pkt);
+         av_frame_free(&s->buffer_frame);
+         return AVERROR(ENOMEM);
+     }
+     
+     // 设置默认像素格式
+     if (avctx->pix_fmt == AV_PIX_FMT_NONE) {
+         avctx->pix_fmt = AV_PIX_FMT_YUV420P;
+     }
+ 
+     // 初始化FFmpeg默认H.264解码器
+     ret = init_ffmpeg_h264_decoder(s, avctx);
+     if (ret < 0) {
+         av_log(avctx, AV_LOG_ERROR, "FFmpeg解码器初始化失败，退出\n");
+         xavc3d_decode_close(&s->decHandle);
+         av_packet_free(&s->buffer_pkt);
+         av_frame_free(&s->buffer_frame);
+         return ret;
+     }
+ 
+     av_log(avctx, AV_LOG_INFO, "AVC3D 解码器初始化成功\n");
+     return 0;
+ }
 
-    case AV_PIX_FMT_YUV422P:
-    case AV_PIX_FMT_YUVJ422P:
-    case AV_PIX_FMT_YUYV422:
-        yuv_sizes[0] = width * height;         // Y分量
-        yuv_sizes[1] = yuv_sizes[0] / 2;       // U分量
-        yuv_sizes[2] = yuv_sizes[1];           // V分量
-        break;
 
-    case AV_PIX_FMT_YUV444P:
-    case AV_PIX_FMT_YUVJ444P:
-        yuv_sizes[0] = width * height;         // Y分量
-        yuv_sizes[1] = yuv_sizes[0];           // U分量
-        yuv_sizes[2] = yuv_sizes[1];           // V分量
-        break;
+#if 0
 
-    case AV_PIX_FMT_YUVA420P:
-        yuv_sizes[0] = width * height;         // Y分量
-        yuv_sizes[1] = yuv_sizes[0] / 4;       // U分量
-        yuv_sizes[2] = yuv_sizes[1];           // V分量
-        // 注意：YUVA420P还有A分量，此处未计算
-        break;
-
-    default:
-        LOGE("[yuv] unsupported pix_fmt=%d, width=%d height=%d", pix_fmt, width, height);
+/**
+ * 向外部预先分配的 RefMv 数组中填充 4x4 子块 MV（外部需确保数组大小足够）
+ * @param mvs 输入：FFmpeg 运动矢量数组
+ * @param mv_count 输入：运动矢量数量
+ * @param img_width 输入：图像宽度（像素）
+ * @param img_height 输入：图像高度（像素）
+ * @param ref_mv_out 输入：预先分配的 RefMv 数组（由外部负责分配和释放）
+ * @return 成功填充的 4x4 子块数量；-1：失败（参数无效或数组大小不足）
+ */
+ static int store_mvs_as_4x4_scan(
+    const AVMotionVector *mvs,
+    int mv_count,
+    int img_width,
+    int img_height,
+    RefMv *ref_mv_out
+) {
+    // 入参校验
+    if (!mvs || mv_count <= 0 || img_width <= 0 || img_height <= 0 || !ref_mv_out) {
+        fprintf(stderr, "Invalid input parameters\n");
         return -1;
     }
 
-    LOGI("[yuv] calculated yuv_size: Y=%d U=%d V=%d", yuv_sizes[0], yuv_sizes[1], yuv_sizes[2]);
+    // 校验图像宽高为 4 的倍数
+    if (img_width % 4 != 0 || img_height % 4 != 0) {
+        fprintf(stderr, "Image width/height must be multiples of 4\n");
+        return -1;
+    }
 
-    return 0;
+    // 计算所需的 4x4 子块总数（外部数组必须 >= 此大小）
+    int sub4x4_per_row = img_width / 4;
+    int sub4x4_per_col = img_height / 4;
+    int total_4x4_needed = sub4x4_per_row * sub4x4_per_col;
+
+    // （可选）如果能获取外部数组的实际大小，可在此处校验是否足够
+    // （例如通过额外参数传入外部数组大小，这里简化处理）
+
+    int success_count = 0;
+
+    // 遍历运动矢量，填充到外部数组
+    for (int i = 0; i < mv_count; i++) {
+        const AVMotionVector *mv = &mvs[i];
+
+        // 只处理 P 帧和 4 的倍数大小的块
+        if (mv->source >= 0 || mv->w % 4 != 0 || mv->h % 4 != 0) {
+            continue;
+        }
+
+        int sub_cols = mv->w / 4;
+        int sub_rows = mv->h / 4;
+
+        for (int j = 0; j < sub_rows; j++) {
+            for (int k = 0; k < sub_cols; k++) {
+                int sub_dst_x = mv->dst_x + k * 4;
+                int sub_dst_y = mv->dst_y + j * 4;
+
+                if (sub_dst_x < 0 || sub_dst_x + 4 > img_width ||
+                    sub_dst_y < 0 || sub_dst_y + 4 > img_height) {
+                    continue;
+                }
+
+                int global_row = sub_dst_y / 4;
+                int global_col = sub_dst_x / 4;
+                int index = global_row * sub4x4_per_row + global_col;
+
+                // 检查索引是否在有效范围内（避免外部数组溢出）
+                if (index >= 0 && index < total_4x4_needed) {
+                    ref_mv_out[index].mv_x = (short)mv->motion_x;
+                    ref_mv_out[index].mv_y = (short)mv->motion_y;
+                    success_count++;
+                }
+            }
+        }
+    }
+
+    printf("Filled %d 4x4 sub-block MVs (total needed: %d)\n", success_count, total_4x4_needed);
+    return success_count;
 }
 
-/* ==== 解码器初始化 ==== */
-static av_cold int avc3d_init(AVCodecContext *avctx)
-{
-    struct timespec start_time, end_time;
-    double elapsed_time = 0;
-    clock_gettime(CLOCK_MONOTONIC, &start_time);
 
-    Avc3dDecoderContext *s = avctx->priv_data;
+#else
 
-    LOGI("[init] ENTER avc3d_init avctx=%p priv=%p", avctx, s);
-    LOGI("[init] avctx BEFORE: width=%d height=%d coded_width=%d coded_height=%d pix_fmt=%d framerate=%d/%d",
-         avctx->width, avctx->height,
-         avctx->coded_width, avctx->coded_height,
-         avctx->pix_fmt,
-         avctx->framerate.num, avctx->framerate.den);
 
-    printf(" enter avc3d_init 0000_08080_1\n");
-    //__android_log_print(ANDROID_LOG_ERROR, "avc3d_init", "enter avc3d_init 0000__0808\n");
-
-    // 保存格式上下文（需要从外部传入）
-    if (avctx->opaque) {
-        s->fmt_ctx = (AVFormatContext*)avctx->opaque;
-        LOGI("[init] fmt_ctx from avctx->opaque = %p", s->fmt_ctx);
-    } else {
-        av_log(avctx, AV_LOG_WARNING, "未提供AVFormatContext，可能影响解码效果\n");
-        LOGE("[init] avctx->opaque is NULL, fmt_ctx will be NULL");
-        s->fmt_ctx = NULL;
+#define FF_MV_FILE_PATH_A "/app/ff_mvfile.csv"  // 宏定义，便于集中修改
+const char ffMVFILEA[] =FF_MV_FILE_PATH_A;
+/**
+ * 保留原有功能：将 AVMotionVector 填充到 4x4 子块数组
+ * 新增功能：将 AVMotionVector 完整信息及子块映射关系存储到 CSV 文件
+ * @param mvs        输入运动向量数组
+ * @param mv_count   运动向量数量
+ * @param img_width  图像宽度（像素）
+ * @param img_height 图像高度（像素）
+ * @param ref_mv_out 输出 4x4 子块运动向量数组
+ * @param filename   输出 CSV 文件名（新增参数，传 NULL 则不存储）
+ * @return 成功填充的子块数量
+ */
+static int store_mvs_as_4x4_scan(
+    const AVMotionVector *mvs,
+    int mv_count,
+    int img_width,
+    int img_height,
+    RefMv *ref_mv_out,
+    const char *filename  // 新增：CSV 输出文件名
+) {
+    // 入参校验
+    if (!mvs || mv_count <= 0 || img_width <= 0 || img_height <= 0 || !ref_mv_out) {
+        fprintf(stderr, "Invalid input parameters\n");
+        return -1;
     }
 
-    // 先按原有逻辑计算一次 yuv_size（使用 coded_*）
-    if (calculate_yuv_component_sizes_2(avctx, s->yuv_size) == 0) {
-        LOGI("[init] after calculate_yuv_component_sizes_2 ysize=%d, usize=%d, vsize=%d",
-             s->yuv_size[0], s->yuv_size[1], s->yuv_size[2]);
-    } else {
-        LOGE("[init] calculate_yuv_component_sizes_2 FAILED, pix_fmt=%d", avctx->pix_fmt);
+    // 校验图像宽高为 4 的倍数
+    if (img_width % 4 != 0 || img_height % 4 != 0) {
+        fprintf(stderr, "Image width/height must be multiples of 4\n");
+        return -1;
     }
 
-    printf(" enter avc3d_init 0001 ysize=%d,usize=%d,vsize=%d\n",
-           s->yuv_size[0], s->yuv_size[1], s->yuv_size[2]);
+    // 计算所需的 4x4 子块总数
+    int sub4x4_per_row = img_width / 4;
+    int sub4x4_per_col = img_height / 4;
+    int total_4x4_needed = sub4x4_per_row * sub4x4_per_col;
 
-    // ==== 关键：老版本在这里“写死”尺寸 ====
-    s->yuv_size[0] = 1920 * 1080;
-    s->yuv_size[1] = 1920 * 1080 / 4;
-    s->yuv_size[2] = 1920 * 1080 / 4;
-    LOGI("[init] OVERRIDE yuv_size to FIXED: Y=%d U=%d V=%d",
-         s->yuv_size[0], s->yuv_size[1], s->yuv_size[2]);
+    // 打开 CSV 文件（filename 非 NULL 时才存储）
+    FILE *fp = NULL;
+    if (filename != NULL) {
+        fp = fopen(filename, "a");
+        if (fp == NULL) {
+            perror("Failed to open MV CSV file");
+            // 仅警告，不影响原有功能执行
+        } else {
+            // 写入 CSV 表头（包含原始 MV 信息和子块映射）
 
-    void *decoder_handle = xavc3d_decode_init(s->yuv_size);
-    // s->fp = fopen("./decoder_dump.YUV", "wb");
-
-    printf(" enter avc3d_init 0002\n");
-    LOGI("[init] xavc3d_decode_init called with yuv_size: %d,%d,%d handle=%p",
-         s->yuv_size[0], s->yuv_size[1], s->yuv_size[2], decoder_handle);
-
-    //printf("pDecoder->yuvsize[0]=%d,pDecoder->yuvsize[1]=%d,pDecoder->yuvsize[2]=%d\n",pDecoder->yuvsize[0],pDecoder->yuvsize[1],pDecoder->yuvsize[2]);
-    if (!decoder_handle) {
-        av_log(avctx, AV_LOG_ERROR, "第三方解码器初始化失败\n");
-        LOGE("[init] xavc3d_decode_init FAILED");
-        return AVERROR(ENOMEM);
-    }
-    s->decHandle = decoder_handle;
-
-    // 分配内部缓存
-    s->buffer_pkt = av_packet_alloc();
-    s->buffer_frame = av_frame_alloc();
-    LOGI("[init] buffer_pkt=%p buffer_frame=%p", s->buffer_pkt, s->buffer_frame);
-    if (!s->buffer_pkt || !s->buffer_frame) {
-        xavc3d_decode_close(&s->decHandle);
-        av_packet_free(&s->buffer_pkt);
-        av_frame_free(&s->buffer_frame);
-        LOGE("[init] av_packet_alloc/av_frame_alloc failed");
-        return AVERROR(ENOMEM);
+            fprintf(fp, "MV_Index,Source,Block_Width,Block_Height,"
+                        "Block_Src_X,Block_Src_Y,"
+                        "Block_Dst_X,Block_Dst_Y,"
+                        "Motion_X,Motion_Y,"
+                        //"SubBlock_Dst_X,SubBlock_Dst_Y,"
+                        //"Global_SubBlock_Row,Global_SubBlock_Col,"
+                        //"SubBlock_Index\n"
+                        "mvscale"
+                        "\n"
+                    );
+        }
     }
 
-    // 设置默认像素格式
-    if (avctx->pix_fmt == AV_PIX_FMT_NONE) {
-        avctx->pix_fmt = AV_PIX_FMT_YUV420P;
-        LOGI("[init] avctx->pix_fmt was NONE, set to YUV420P");
+    int success_count = 0;
+
+    // 遍历运动矢量，填充数组 + 存储文件
+    for (int i = 0; i < mv_count; i++) {
+        const AVMotionVector *mv = &mvs[i];
+
+
+        // 写入 CSV 文件（若文件打开成功）
+        if(g_num <=60)
+            if (fp != NULL) {
+                fprintf(fp, "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+                        i,                      // 原始 MV 索引
+                        mv->source,             // 参考源
+                        mv->w, mv->h,           // 原始块宽高
+                        mv->src_x, mv->src_y,   // 原始块目标坐标
+                        mv->dst_x, mv->dst_y,   // 原始块目标坐标
+                        mv->motion_x, mv->motion_y, // 原始运动向量
+                        (int)mv->motion_scale
+                        //sub_dst_x, sub_dst_y,   // 4x4 子块目标坐标
+                        //global_row, global_col, // 子块全局行列
+                        //index
+                    );                 // 子块全局索引
+            }
+
+        // 只处理 P 帧和 4 的倍数大小的块
+    #if 0
+        if (mv->source >= 0 || mv->w % 4 != 0 || mv->h % 4 != 0) {
+            continue;
+        }
+    #endif
+        int sub_cols = mv->w / 4;
+        int sub_rows = mv->h / 4;
+
+        for (int j = 0; j < sub_rows; j++) {
+            for (int k = 0; k < sub_cols; k++) {
+                int sub_dst_x = mv->dst_x + k * 4;
+                int sub_dst_y = mv->dst_y + j * 4;            
+                // 计算子块全局索引
+                int global_row = sub_dst_y / 4;
+                int global_col = sub_dst_x / 4;
+                int index = global_row * sub4x4_per_row + global_col;
+                //printf("----mvinfo sub_dst_x =%d,sub_dst_y=%d, mv->motion_x=%d, mv->motion_y=%d \n",sub_dst_x, sub_dst_y, mv->motion_x,mv->motion_y);
+
+                // 填充到输出数组
+                if (index >= 0 && index < total_4x4_needed) {
+                    ref_mv_out[index].mv_x = (short)mv->motion_x;
+                    ref_mv_out[index].mv_y = (short)mv->motion_y;
+                    success_count++;
+                }
+
+
+            }
+        }
     }
 
-    // ==== 老版本写死输出参数 ====
-    avctx->width         = 1920;
-    avctx->height        = 1080 * 2;
-    avctx->coded_width   = 1920;
-    avctx->coded_height  = 1088 * 2;
-    avctx->framerate.num = 24000;
-    avctx->framerate.den = 1001;
+    // 关闭文件
+    if (fp != NULL) {
+        fclose(fp);
+        printf("MV data stored to %s\n", filename);
+    }
 
-    LOGI("[init] avctx AFTER OVERRIDE: width=%d height=%d coded_width=%d coded_height=%d pix_fmt=%d framerate=%d/%d",
-         avctx->width, avctx->height,
-         avctx->coded_width, avctx->coded_height,
-         avctx->pix_fmt,
-         avctx->framerate.num, avctx->framerate.den);
-
-    // 计算时间差
-    clock_gettime(CLOCK_MONOTONIC, &end_time);
-    elapsed_time = (end_time.tv_sec + end_time.tv_nsec * 1e-9
-                    - start_time.tv_sec - start_time.tv_nsec * 1e-9);
-
-    printf("test123 avc3d_init execution time: %s (according to clock_gettime)\n",
-           unittime_string_1 (elapsed_time));
-
-    av_log(avctx, AV_LOG_INFO, "AVC3D 解码器初始化成功,  %.f seconds\n", elapsed_time);
-    LOGI("[init] LEAVE avc3d_init, elapsed=%s", unittime_string_1 (elapsed_time));
-
-    return 0;
+    printf("Filled %d 4x4 sub-block MVs (total needed: %d)\n", success_count, total_4x4_needed);
+    return success_count;
 }
+#endif
 
-/* ==== 解码函数 ==== */
+ 
+
+
+ // 解码函数：FFmpeg和解码器并行处理原始码流，互不干扰
+//static FILE *g_avc3d_file = NULL;
 static int avc3d_decode(AVCodecContext *avctx, void *frame, int *got_frame, AVPacket *pkt)
 {
     Avc3dDecoderContext *s = avctx->priv_data;
-    int ret = 0;
-    static int g_out_no = 0;
-    int64_t  pts_tmp = 0;
-    struct timespec start_time, end_time;
-    double elapsed_time = 0;
-    clock_gettime(CLOCK_MONOTONIC, &start_time);
+    int ret;
+    int ffmpeg_got_frame;
 
-    LOGI("[decode] ENTER avc3d_decode avctx=%p ctx_decHandle=%p frame=%p pkt=%p",
-         avctx, s ? s->decHandle : NULL, frame, pkt);
-
-    // __android_log_print(ANDROID_LOG_ERROR, "avc3d_decode", "avc3d_decode fun=%s line=%d\n", __FUNCTION__,  __LINE__);
     *got_frame = 0;
 
     // 处理输入数据包
     if (pkt) {
-        LOGI("[decode] input pkt: size=%d pts=%lld dts=%lld flags=0x%x pos=%lld",
-             pkt->size, (long long)pkt->pts, (long long)pkt->dts,
-             pkt->flags, (long long)pkt->pos);
         ret = av_packet_ref(s->buffer_pkt, pkt);
-        if (ret < 0) {
-            LOGE("[decode] av_packet_ref FAILED ret=%d", ret);
-            return ret;
-        }
-        LOGI("[decode] buffer_pkt after ref: size=%d pts=%lld dts=%lld",
-             s->buffer_pkt->size,
-             (long long)s->buffer_pkt->pts,
-             (long long)s->buffer_pkt->dts);
+        if (ret < 0) return ret;
     } else {
         s->eof = 1;
-        LOGI("[decode] pkt == NULL, set eof=1");
+    }
+    
+
+
+    g_num++;
+
+    // 1. FFmpeg解码器：处理原始码流，解码后缓存（供联动使用）
+      // ======================================
+    // 1. FFmpeg 同步解码：发送 pkt 后强制接收帧
+    // ======================================
+    if (s->buffer_pkt->size > 0 || s->eof) {
+        // 复制原始数据包到FFmpeg解码器（输入是原始码流）
+        av_packet_unref(s->h264_pkt);
+        ret = av_packet_ref(s->h264_pkt, s->buffer_pkt);
+        if (ret < 0) {
+            av_log(avctx, AV_LOG_ERROR, "复制数据包到FFmpeg失败: %s\n", av_err2str(ret));
+            return ret;
+        }
+
+        ffmpeg_got_frame = 0;
+        //printf("---h264 2---\n");
+        ret = s->h264_decode_func(s->h264_ctx, s->h264_frame, &ffmpeg_got_frame,  s->h264_pkt);
+        if (ret < 0) {
+            av_log(avctx, AV_LOG_ERROR, "FFmpeg发送数据包失败: %s\n", av_err2str(ret));
+            return ret;
+        }
+
+        // 接收FFmpeg解码后的帧（供联动）
+        /////////////////////////////////////////////////////////
+        ///copy now 
+        //if(g_num & 1)
+        if(ffmpeg_got_frame == 1)
+        {
+            //printf("----------------ff xxxcopy begin--------------------\n");
+            int refindex = 0;
+            refindex = selectOneRefBuf(&(s->wFrame));
+
+            
+            if(refindex == -1){
+                //assert(0);
+                printf("------refindex =  -1, not find refBuf---------\n");
+                exit(0);
+                return 0;
+            }
+            s->wFrame.inputRef[refindex].pts = s->h264_pkt->pts;
+            s->wFrame.inputRef[refindex].dts = s->h264_pkt->dts;
+            memcpy(s->wFrame.inputRef[refindex].data[0],s->h264_frame->data[0],s->yuv_size[0]);
+            memcpy(s->wFrame.inputRef[refindex].data[1],s->h264_frame->data[1],s->yuv_size[1]);
+            memcpy(s->wFrame.inputRef[refindex].data[2],s->h264_frame->data[2],s->yuv_size[2]);
+            //printf("----------------ff copy end-------------------size0=%d, size1=%d, size2=%d -\n",s->yuv_size[0],s->yuv_size[1],s->yuv_size[2]);
+
+                        // 提取MV并存储
+
+            AVFrameSideData *sd = av_frame_get_side_data(s->h264_frame, AV_FRAME_DATA_MOTION_VECTORS);
+            if(sd) 
+            {
+                const AVMotionVector *mvs = (const AVMotionVector *)sd->data;
+                int mv_count = sd->size / sizeof(AVMotionVector);
+                memset(s->wFrame.inputRef[refindex].pmv, 0, sizeof(RefMv)*1920*1080/16);
+                store_mvs_as_4x4_scan(mvs, mv_count, 1920, 1080, s->wFrame.inputRef[refindex].pmv, ffMVFILEA);
+
+                //printf("----------------ff copy end（帧号：%d）-------------------\n", g_num);
+            } else {
+                //printf("帧号：%d，未提取到MV\n", g_num);
+            }
+        }
+        printf("ffmpeg解码成功：pts=%lld, 宽=%d, 高=%d， ffmpeg_got_frame=%d\n", s->h264_frame->pts, s->h264_frame->width, s->h264_frame->height,ffmpeg_got_frame);
+        av_frame_unref(s->h264_frame);
+        
     }
 
-    unsigned char bytes[4];
-    bytes[0] = (s->buffer_pkt->size >> 0) & 0xFF;
-    bytes[1] = (s->buffer_pkt->size >> 8) & 0xFF;
-    bytes[2] = (s->buffer_pkt->size >> 16) & 0xFF;
-    bytes[3] = (s->buffer_pkt->size >> 24) & 0xFF;
-
-    //printf(" enter avc3d_decode\n");
-    /*
-    char strbuff[288];
-    memset(strbuff, 0, sizeof(strbuff));
-    sprintf(strbuff, "./dump/f_%d.YUV",file_index++);
-    s->fp = fopen(strbuff, "wb");
-
-    fwrite(bytes, 1, 4, s->fp);
-    fwrite(s->buffer_pkt->data, 1, s->buffer_pkt->size, s->fp);
-    fclose(s->fp);
-    s->fp = NULL;
-    */
-
-    // 调用第三方解码器
+    // 2. 第三方解码器：处理原始码流（恢复原始输入，与FFmpeg并行）
     if (s->buffer_pkt->size > 0 || s->eof) {
-
-        //dec proc
         AVFrame *tframe = (AVFrame *)frame;
-        DecPacket  wPkt;
-        DecFrame   wFrame;
+        DecPacket wPkt;
+        //DecFrame wFrame;
+        DecFrame *wFrame = &(s->wFrame);
 
-        LOGI("[decode] before setup tframe: avctx width=%d height=%d coded_width=%d coded_height=%d",
-             avctx->width, avctx->height, avctx->coded_width, avctx->coded_height);
+        // 设置第三方解码器输出帧属性
 
-        // 修改数据前设置正确尺寸（老版本假设输出 height=原始高度的2倍）
-        tframe->height = avctx->height;
-        tframe->width  = avctx->width;
-        tframe->linesize[0] = avctx->coded_width;
-        tframe->linesize[1] = tframe->linesize[2] = avctx->coded_width / 2;
-        tframe->format = AV_PIX_FMT_YUV420P; // avctx->pix_fmt;
-        tframe->pts    = pkt ? pkt->pts : 0;
+//        tframe->height = avctx->coded_height * 2;
+//    #if VLC_CHECK
+//        tframe->height = 2160;
+//    #endif
+//        tframe->width = avctx->coded_width;
+//        tframe->format = avctx->pix_fmt;
 
-        printf("aaa tframe->height = %d,tframe->width=%d, tframe->format=%d\n ",
-               tframe->height, tframe->width, tframe->format);
-        LOGI("[decode] tframe init: w=%d h=%d coded_w=%d coded_h=%d fmt=%d pts=%lld",
-             tframe->width, tframe->height,
-             avctx->coded_width, avctx->coded_height,
-             tframe->format, (long long)tframe->pts);
+// --- 固定输出：1920x2160 YUV420P ---
+        tframe->width  = 1920;
+        tframe->height = 1080 * 2;   // 2160
+        tframe->format = AV_PIX_FMT_YUV420P;
 
-        // 分配缓冲区（根据width/height/format计算大小）
-        if (!tframe->data[0] ||
-            tframe->width  != avctx->height ||  /* 注意：这里是老代码的“奇怪条件”，保留 */
-            tframe->height != avctx->width)
-        {
-            LOGI("[decode] av_frame_get_buffer needed: data0=%p, tframe(w=%d,h=%d) vs avctx(w=%d,h=%d)",
-                 tframe->data[0],
-                 tframe->width, tframe->height,
-                 avctx->width, avctx->height);
+//        // 分配第三方解码器输出缓冲区
+//        if (!tframe->data[0] ||
+//            tframe->width != avctx->coded_width ||
+//            tframe->height != avctx->coded_height * 2) {
+//            ret = av_frame_get_buffer(tframe, 0);
+//            if (ret < 0) {
+//                av_log(avctx, AV_LOG_ERROR, "分配第三方帧缓冲区失败: %d\n", ret);
+//                return ret;
+//            }
+//        }
 
-            ret = av_frame_get_buffer(tframe, 0);  // 0表示按默认对齐方式分配
-            printf("bbb tframe->height = %d,tframe->width=%d, tframe->format=%d  ret=%d \n ",
-                   tframe->height, tframe->width, tframe->format , ret);
-
-            LOGI("[decode] after av_frame_get_buffer: ret=%d data0=%p linesize[0]=%d [1]=%d [2]=%d",
-                 ret,
-                 tframe->data[0],
-                 tframe->linesize[0], tframe->linesize[1], tframe->linesize[2]);
-
+        if (!tframe->data[0]) {
+            ret = av_frame_get_buffer(tframe, 0);
             if (ret < 0) {
                 av_log(avctx, AV_LOG_ERROR, "分配帧缓冲区失败: %d\n", ret);
-                LOGE("[decode] av_frame_get_buffer FAILED ret=%d", ret);
                 return ret;
             }
-            tframe->height = avctx->coded_height;
-            tframe->width  = avctx->coded_width;
-
-            LOGI("[decode] tframe size overridden to coded: w=%d h=%d",
-                 tframe->width, tframe->height);
         }
 
-        /* 绑定 DecFrame 输出指针（直接指向 tframe->data） */
-        {
-            int i;
-            for (i = 0; i < 3; i++) {
-                wFrame.data[i] = tframe->data[i];
-            }
-        }
+        // 关键修正：第三方解码器输入是原始码流（与FFmpeg相同的数据包）
+        wPkt.data = s->buffer_pkt->data;    // 原始码流数据（而非FFmpeg的YUV）
+        wPkt.size = s->buffer_pkt->size;    // 原始码流大小
+        wPkt.pts = s->buffer_pkt->pts;      // 原始时间戳
+        wPkt.dts = s->buffer_pkt->dts;
 
-        wPkt.size = s->buffer_pkt->size;
-        wPkt.data = s->buffer_pkt->data;
-        wPkt.pts  = s->buffer_pkt->pts;
-        wPkt.dts  = s->buffer_pkt->dts;
+        // 第三方解码器输出缓冲区
 
-        LOGI("[decode] call xavc3d_decode_pkt: in_size=%d pts=%lld dts=%lld tframe(w=%d,h=%d)",
-             wPkt.size, (long long)wPkt.pts, (long long)wPkt.dts,
-             tframe->width, tframe->height);
+        wFrame->data[0] = tframe->data[0];
+        wFrame->data[1] = tframe->data[1];
+        wFrame->data[2] = tframe->data[2];
 
-        ret = xavc3d_decode_pkt(s->decHandle, &wFrame, got_frame, &wPkt);
+        printf("----avc3ddecoder input pts = %lld \n",wPkt.pts);
 
-        if (pkt != NULL)
-            printf("ccc22233  tframe->height = %d,tframe->width=%d, tframe->format=%d, ret=%d, pkt_pts=%lld \n ",
-                   tframe->height, tframe->width, tframe->format , ret, pkt->pts);
-        else
-            printf("ccc22233  tframe->height = %d,tframe->width=%d, tframe->format=%d  ret=%d \n ",
-                   tframe->height, tframe->width, tframe->format , ret);
 
-        LOGI("[decode] xavc3d_decode_pkt ret=%d got_frame=%d out_pts=%lld out_w=%d out_h=%d",
-             ret, *got_frame, (long long)wFrame.pts, tframe->width, tframe->height);
-
+        // 调用第三方解码器（输入原始码流，恢复其正常解码逻辑）
+        //ret = xavc3d_decode_pkt(s->decHandle, &wFrame, got_frame, &wPkt);
+        ret = xavc3d_decode_pkt(s->decHandle, wFrame, got_frame, &wPkt);
         if (ret < 0) {
-            av_log(avctx, AV_LOG_ERROR, "解码错误: %d\n", ret);
-            LOGE("[decode] decode error ret=%d", ret);
+            av_log(avctx, AV_LOG_ERROR, "第三方解码错误: %d\n", ret);
             return ret;
         }
 
         if (*got_frame) {
-            // 重置缓冲区
-            tframe->pts = wFrame.pts;
-            // pts_tmp = ... (原有注释逻辑保留)
-            av_packet_unref(s->buffer_pkt);
-
-            printf("xxxx avc3d_decode frame->height = %d,frame->width=%d, got_frame=%d pts=%lld\n ",
-                   tframe->height, tframe->width,*got_frame, tframe->pts);
-
-            LOGI("[decode] GOT_FRAME: tframe(w=%d,h=%d) pts=%lld linesize0=%d",
-                 tframe->width, tframe->height,
-                 (long long)tframe->pts,
-                 tframe->linesize[0]);
-        } else {
-            LOGI("[decode] no frame output this call (got_frame=0)");
+            tframe->pts = wFrame->pts;   
         }
+
+        printf("第三方解码成功：pts=%lld, 宽=%d, 高=%d, 3d_got_frame =%d\n", tframe->pts, tframe->width, tframe->height,got_frame);
+        av_packet_unref(s->buffer_pkt);
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &end_time);
-    elapsed_time = (end_time.tv_sec + end_time.tv_nsec * 1e-9
-                    - start_time.tv_sec - start_time.tv_nsec * 1e-9);
-
-    printf("test123 decoder execution time: %s (according to clock_gettime)\n",
-           unittime_string_1 (elapsed_time));
-    LOGI("[decode] LEAVE avc3d_decode elapsed=%s ret=%d final_return=%d",
-         unittime_string_1 (elapsed_time),
-         ret,
-         (ret >= 0 ? (pkt ? pkt->size : 0) : ret));
-
-    return ret >= 0 ? pkt ? pkt->size : 0 : ret;
+    return (ret >= 0) ? (pkt ? pkt->size : 0) : ret;
 }
-
-/* ==== 刷新解码器 ==== */
-static void avc3d_flush(AVCodecContext *avctx)
-{
-    struct timespec start_time, end_time;
-    double elapsed_time = 0;
-    clock_gettime(CLOCK_MONOTONIC, &start_time);
-
-    Avc3dDecoderContext *s = avctx->priv_data;
-
-    LOGI("[flush] ENTER avc3d_flush avctx=%p ctx_decHandle=%p", avctx, s ? s->decHandle : NULL);
-
-    // 清除内部缓存
-    av_packet_unref(s->buffer_pkt);
-    av_frame_unref(s->buffer_frame);
-    s->got_frame = 0;
-    s->eof = 0;
-
-    LOGI("[flush] buffers cleared: buffer_pkt=%p buffer_frame=%p got_frame=%d eof=%d",
-         s->buffer_pkt, s->buffer_frame, s->got_frame, s->eof);
-
-    // 刷新第三方解码器
-    if (s->decHandle) {
-        xavc3d_decode_flush(s->decHandle);
-        LOGI("[flush] xavc3d_decode_flush called");
-    } else {
-        LOGI("[flush] decHandle is NULL, skip third-party flush");
-    }
-
-    clock_gettime(CLOCK_MONOTONIC, &end_time);
-    elapsed_time = (end_time.tv_sec + end_time.tv_nsec * 1e-9
-                    - start_time.tv_sec - start_time.tv_nsec * 1e-9);
-
-    //printf("avc3d_flush execution time: %.f seconds\n", elapsed_time);
-    printf("test123 avc3d_flush execution time: %s (according to clock_gettime)\n",
-           unittime_string_1 (elapsed_time));
-    LOGI("[flush] LEAVE avc3d_flush elapsed=%s",
-         unittime_string_1 (elapsed_time));
-}
-
-/* ==== 关闭解码器 ==== */
-static av_cold int avc3d_close(AVCodecContext *avctx)
-{
-    Avc3dDecoderContext *s = avctx->priv_data;
-    struct timespec start_time, end_time;
-    double elapsed_time = 0;
-    clock_gettime(CLOCK_MONOTONIC, &start_time);
-
-    LOGI("[close] ENTER avc3d_close avctx=%p ctx_decHandle=%p", avctx, s ? s->decHandle : NULL);
-
-    // 关闭第三方解码器
-    if (s->decHandle) {
-        xavc3d_decode_close(&s->decHandle);
-        LOGI("[close] xavc3d_decode_close done, decHandle now=%p", s->decHandle);
-        s->decHandle = NULL;
-    } else {
-        LOGI("[close] decHandle already NULL");
-    }
-
-    // 释放内部资源
-    av_packet_free(&s->buffer_pkt);
-    av_frame_free(&s->buffer_frame);
-    LOGI("[close] buffer_pkt/frame freed: buffer_pkt=%p buffer_frame=%p",
-         s->buffer_pkt, s->buffer_frame);
-    // fclose(s->fp);
-
-    av_log(avctx, AV_LOG_INFO, "AVC3D 解码器关闭\n");
-
-    clock_gettime(CLOCK_MONOTONIC, &end_time);
-    elapsed_time = (end_time.tv_sec + end_time.tv_nsec * 1e-9
-                    - start_time.tv_sec - start_time.tv_nsec * 1e-9);
-
-    printf("test123 avc3d_close execution time: %s (according to clock_gettime)\n",
-           unittime_string_1 (elapsed_time));
-    LOGI("[close] LEAVE avc3d_close elapsed=%s",
-         unittime_string_1 (elapsed_time));
-
-    return 0;
-}
-
-/* ==== 解码器定义 ==== */
-AVCodec ff_avc3d_decoder = {
-    .name           = "avc3d",
-    .long_name      = "AVC3D H.264 Decoder",
-    .type           = AVMEDIA_TYPE_VIDEO,
-    .id             = AV_CODEC_ID_XAV3,
-    .priv_data_size = sizeof(Avc3dDecoderContext),
-    .init           = avc3d_init,
-    .decode         = avc3d_decode,
-    .close          = avc3d_close,
-    .flush          = avc3d_flush,
-    .capabilities   = AV_CODEC_CAP_DELAY,
-};
+ 
+ // 刷新解码器
+ static void avc3d_flush(AVCodecContext *avctx)
+ {
+     Avc3dDecoderContext *s = avctx->priv_data;
+     
+     // 清除内部缓存
+     av_packet_unref(s->buffer_pkt);
+     av_frame_unref(s->buffer_frame);
+     av_frame_unref(s->h264_frame);
+     av_frame_unref(s->cached_frame);
+     av_packet_unref(s->h264_pkt);
+     s->got_frame = 0;
+     s->eof = 0;
+     
+     // 刷新两个解码器
+     if (s->decHandle) {
+         xavc3d_decode_flush(s->decHandle);
+     }
+     if (s->h264_ctx) {
+         avcodec_flush_buffers(s->h264_ctx);
+     }
+ }
+ 
+ 
+ // 关闭解码器
+ static av_cold int avc3d_close(AVCodecContext *avctx)
+ {
+     Avc3dDecoderContext *s = avctx->priv_data;
+     
+     // 释放FFmpeg解码器资源
+     if (s->h264_ctx) {
+         avcodec_close(s->h264_ctx);
+         avcodec_free_context(&s->h264_ctx);
+     }
+     av_frame_free(&s->h264_frame);
+     av_packet_free(&s->h264_pkt);
+     av_frame_free(&s->cached_frame);
+ 
+     // 关闭第三方解码器
+     if (s->decHandle) {
+         xavc3d_decode_close(&s->decHandle);
+         s->decHandle = NULL;
+     }
+     
+     // 释放内部资源
+     av_packet_free(&s->buffer_pkt);
+     av_frame_free(&s->buffer_frame);
+     
+     av_log(avctx, AV_LOG_INFO, "AVC3D 解码器关闭\n");
+     return 0;
+ }
+ 
+ 
+ // 解码器定义
+ AVCodec ff_avc3d_decoder = {
+     .name           = "avc3d",
+     .long_name      = "AVC3D H.264 Decoder",
+     .type           = AVMEDIA_TYPE_VIDEO,
+     .id             = AV_CODEC_ID_XAV3,
+     .priv_data_size = sizeof(Avc3dDecoderContext),
+     .init           = avc3d_init,
+     .decode         = avc3d_decode,
+     .close          = avc3d_close,
+     .flush          = avc3d_flush,
+     .capabilities   = AV_CODEC_CAP_DELAY,
+ };
