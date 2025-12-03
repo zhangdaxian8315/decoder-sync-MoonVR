@@ -664,7 +664,7 @@ static int avc3d_decode(AVCodecContext *avctx, void *frame, int *got_frame, AVPa
      .name           = "avc3d",
      .long_name      = "AVC3D H.264 Decoder",
      .type           = AVMEDIA_TYPE_VIDEO,
-     .id             = AV_CODEC_ID_H264,
+     .id             = AV_CODEC_ID_XAV3,
      .priv_data_size = sizeof(Avc3dDecoderContext),
      .init           = avc3d_init,
      .decode         = avc3d_decode,
