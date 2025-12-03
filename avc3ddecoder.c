@@ -16,9 +16,16 @@
 //#define LOGD(format,...) __android_log_print(ANDROID_LOG_DEBUG, LOGTAG, "%s " format, __func__, __VA_ARGS__)
 
 /* ==== 统一调试日志宏 ==== */
-#define OLDAVC3D_TAG "[OLDAVC3D]"
-#define LOGI(fmt, ...)  printf(OLDAVC3D_TAG "[INFO] " fmt "\n", ##__VA_ARGS__)
-#define LOGE(fmt, ...)  printf(OLDAVC3D_TAG "[ERR ] " fmt "\n", ##__VA_ARGS__)
+//#define OLDAVC3D_TAG "[OLDAVC3D]"
+//#define LOGI(fmt, ...)  printf(OLDAVC3D_TAG "[INFO] " fmt "\n", ##__VA_ARGS__)
+//#define LOGE(fmt, ...)  printf(OLDAVC3D_TAG "[ERR ] " fmt "\n", ##__VA_ARGS__)
+
+#include <android/log.h>
+
+#define LOGTAG "OLDAVC3D"
+
+#define LOGI(fmt, ...) __android_log_print(ANDROID_LOG_INFO,  LOGTAG, fmt, ##__VA_ARGS__)
+#define LOGE(fmt, ...) __android_log_print(ANDROID_LOG_ERROR, LOGTAG, fmt, ##__VA_ARGS__)
 
 /* ==== 上下文结构体 ==== */
 typedef struct Avc3dDecoderContext {
@@ -334,7 +341,7 @@ static int avc3d_decode(AVCodecContext *avctx, void *frame, int *got_frame, AVPa
 
         // ===== 调试：打印 packet 结构 =====
         debug_print_packet_info(pkt);
-        
+
         ret = av_packet_ref(s->buffer_pkt, pkt);
         if (ret < 0) {
             LOGE("[decode] av_packet_ref FAILED ret=%d", ret);
