@@ -190,24 +190,8 @@
 #endif
  
      // 计算YUV分量大小
-//     calculate_yuv_component_sizes_2(avctx, s->yuv_size);
-//     printf("enter avc3d_init 0001 ysize=%d, usize=%d, vsize=%d\n",
-//            s->yuv_size[0], s->yuv_size[1], s->yuv_size[2]);
-
-// --- 写死 AVC3D 蓝光参数（旧版做法） ---
-     avctx->width  = 1920;
-     avctx->height = 1080 * 2;     // top-bottom
-     avctx->coded_width  = 1920;
-     avctx->coded_height = 1088 * 2; // 1088 = H.264 对齐
-     avctx->pix_fmt = AV_PIX_FMT_YUV420P;
-     avctx->framerate.num = 24000;
-     avctx->framerate.den = 1001;
-
-     s->yuv_size[0] = 1920 * 1080;
-     s->yuv_size[1] = s->yuv_size[0] / 4;
-     s->yuv_size[2] = s->yuv_size[0] / 4;
-
-     printf("enter avc3d_init FIXED yuv=%d,%d,%d\n",
+     calculate_yuv_component_sizes_2(avctx, s->yuv_size);
+     printf("enter avc3d_init 0001 ysize=%d, usize=%d, vsize=%d\n",
             s->yuv_size[0], s->yuv_size[1], s->yuv_size[2]);
 
  
@@ -569,34 +553,21 @@ static int avc3d_decode(AVCodecContext *avctx, void *frame, int *got_frame, AVPa
         DecFrame *wFrame = &(s->wFrame);
 
         // 设置第三方解码器输出帧属性
-//
-//        tframe->height = avctx->coded_height * 2;
-//    #if VLC_CHECK
-//        tframe->height = 2160;
-//    #endif
-//        tframe->width = avctx->coded_width;
-//        tframe->format = avctx->pix_fmt;
 
-// --- 固定输出：1920x2160 YUV420P ---
-        tframe->width  = 1920;
-        tframe->height = 1080 * 2;   // 2160
-        tframe->format = AV_PIX_FMT_YUV420P;
+        tframe->height = avctx->coded_height * 2;
+    #if VLC_CHECK
+        tframe->height = 2160;
+    #endif
+        tframe->width = avctx->coded_width;
+        tframe->format = avctx->pix_fmt;
 
         // 分配第三方解码器输出缓冲区
-//        if (!tframe->data[0] ||
-//            tframe->width != avctx->coded_width ||
-//            tframe->height != avctx->coded_height * 2) {
-//            ret = av_frame_get_buffer(tframe, 0);
-//            if (ret < 0) {
-//                av_log(avctx, AV_LOG_ERROR, "分配第三方帧缓冲区失败: %d\n", ret);
-//                return ret;
-//            }
-//        }
-
-        if (!tframe->data[0]) {
+        if (!tframe->data[0] ||
+            tframe->width != avctx->coded_width ||
+            tframe->height != avctx->coded_height * 2) {
             ret = av_frame_get_buffer(tframe, 0);
             if (ret < 0) {
-                av_log(avctx, AV_LOG_ERROR, "分配帧缓冲区失败: %d\n", ret);
+                av_log(avctx, AV_LOG_ERROR, "分配第三方帧缓冲区失败: %d\n", ret);
                 return ret;
             }
         }
