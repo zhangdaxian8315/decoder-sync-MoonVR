@@ -39,6 +39,10 @@
      AVPacket *h264_pkt;       // 给FFmpeg的数据包
      AVFrame *cached_frame;    // 缓存FFmpeg解码后的帧（供第三方解码器使用）
 
+     // ===== 新增：用来缓存左眼 Packet =====
+     AVPacket *left_pkt;     // 缓存左眼
+     int       has_left_pkt; // 是否已有左眼
+
     // 关键：H264 解码函数指针（替代直接调用 h264_decode_frame）
     int (*h264_decode_func)(AVCodecContext *avctx, void *data, int *got_frame, AVPacket *avpkt);
  
@@ -103,6 +107,28 @@
      
      return 0;
  }
+
+// 判断是否包含 NAL type 20（MVC 视图扩展，右眼）
+static int packet_is_right_eye(const AVPacket *pkt)
+{
+    const uint8_t *p = pkt->data;
+    int size = pkt->size;
+
+    for (int i = 0; i < size - 4; i++) {
+        // 查找起始码
+        if (p[i] == 0 && p[i+1] == 0 &&
+            (p[i+2] == 1 || (p[i+2] == 0 && p[i+3] == 1))) {
+
+            // 找到 NAL 头
+            int offset = (p[i+2] == 1) ? 3 : 4;
+            uint8_t nal_type = p[i + offset] & 0x1F;
+
+            if (nal_type == 20)
+                return 1; // Right eye
+        }
+    }
+    return 0; // Not right eye
+}
  
 
  // 初始化FFmpeg默认H.264解码器
@@ -170,6 +196,8 @@
      Avc3dDecoderContext *s = avctx->priv_data;
      int ret;
      void *decoder_handle;
+
+     printf("avc3d 1204 version.\n");
  
      // 保存格式上下文
      if (avctx->opaque) {
@@ -223,6 +251,9 @@
          av_frame_free(&s->buffer_frame);
          return AVERROR(ENOMEM);
      }
+
+     s->left_pkt = av_packet_alloc();
+     s->has_left_pkt = 0;
      
      // 设置默认像素格式
      if (avctx->pix_fmt == AV_PIX_FMT_NONE) {
@@ -244,7 +275,7 @@
  }
 
 
-#if 1
+#if 0
 
 /**
  * 向外部预先分配的 RefMv 数组中填充 4x4 子块 MV（外部需确保数组大小足够）
@@ -468,6 +499,47 @@ static int avc3d_decode(AVCodecContext *avctx, void *frame, int *got_frame, AVPa
 
     *got_frame = 0;
 
+    if (pkt) {
+
+        int is_right = packet_is_right_eye(pkt);
+
+        if (!is_right) {
+            // ---- 这是左眼：先缓存，不参与解码 ----
+            av_packet_unref(s->left_pkt);
+            av_packet_ref(s->left_pkt, pkt);
+            s->has_left_pkt = 1;
+
+            // 不进入后续 decode，直接返回本包大小
+            *got_frame = 0;
+            return pkt->size;
+        }
+
+        // ---- 这里是右眼：如果已经有左眼，则合帧 ----
+        if (s->has_left_pkt) {
+
+            // 生成一个新的“左右眼合成包” (AU)
+            int merged_size = s->left_pkt->size + pkt->size;
+
+            AVPacket *merged = av_packet_alloc();
+            merged->data = av_malloc(merged_size);
+            merged->size = merged_size;
+
+            // 先拷贝左眼，再拷贝右眼
+            memcpy(merged->data, s->left_pkt->data, s->left_pkt->size);
+            memcpy(merged->data + s->left_pkt->size, pkt->data, pkt->size);
+
+            merged->pts = pkt->pts;
+            merged->dts = pkt->dts;
+
+            // 用 merged 替换 pkt（交给后续流程）
+            pkt = merged;
+
+            // 清理左眼缓存
+            s->has_left_pkt = 0;
+            av_packet_unref(s->left_pkt);
+        }
+    }
+
     // 处理输入数据包
     if (pkt) {
         ret = av_packet_ref(s->buffer_pkt, pkt);
@@ -484,10 +556,7 @@ static int avc3d_decode(AVCodecContext *avctx, void *frame, int *got_frame, AVPa
       // ======================================
     // 1. FFmpeg 同步解码：发送 pkt 后强制接收帧
     // ======================================
-
-    if ( (s->buffer_pkt->size > 0 || s->eof)  && g_num&1)
-    { 
-
+    if (s->buffer_pkt->size > 0 || s->eof) {
         // 复制原始数据包到FFmpeg解码器（输入是原始码流）
         av_packet_unref(s->h264_pkt);
         ret = av_packet_ref(s->h264_pkt, s->buffer_pkt);
@@ -536,7 +605,7 @@ static int avc3d_decode(AVCodecContext *avctx, void *frame, int *got_frame, AVPa
                 const AVMotionVector *mvs = (const AVMotionVector *)sd->data;
                 int mv_count = sd->size / sizeof(AVMotionVector);
                 memset(s->wFrame.inputRef[refindex].pmv, 0, sizeof(RefMv)*1920*1080/16);
-                //store_mvs_as_4x4_scan(mvs, mv_count, 1920, 1080, s->wFrame.inputRef[refindex].pmv, ffMVFILEA);
+                // store_mvs_as_4x4_scan(mvs, mv_count, 1920, 1080, s->wFrame.inputRef[refindex].pmv, ffMVFILEA);
 
                 //printf("----------------ff copy end（帧号：%d）-------------------\n", g_num);
             } else {
@@ -656,6 +725,7 @@ static int avc3d_decode(AVCodecContext *avctx, void *frame, int *got_frame, AVPa
      // 释放内部资源
      av_packet_free(&s->buffer_pkt);
      av_frame_free(&s->buffer_frame);
+     av_packet_free(&s->left_pkt);
      
      av_log(avctx, AV_LOG_INFO, "AVC3D 解码器关闭\n");
      return 0;
@@ -667,7 +737,7 @@ static int avc3d_decode(AVCodecContext *avctx, void *frame, int *got_frame, AVPa
      .name           = "avc3d",
      .long_name      = "AVC3D H.264 Decoder",
      .type           = AVMEDIA_TYPE_VIDEO,
-     .id             = AV_CODEC_ID_H264,
+     .id             = AV_CODEC_ID_XAV3,
      .priv_data_size = sizeof(Avc3dDecoderContext),
      .init           = avc3d_init,
      .decode         = avc3d_decode,
