@@ -197,7 +197,7 @@ static int packet_is_right_eye(const AVPacket *pkt)
      int ret;
      void *decoder_handle;
 
-     printf("avc3d 1204 version.\n");
+     printf("avc3d 1204 01 version.\n");
  
      // 保存格式上下文
      if (avctx->opaque) {
@@ -501,9 +501,11 @@ static int avc3d_decode(AVCodecContext *avctx, void *frame, int *got_frame, AVPa
 
     if (pkt) {
 
-        int is_right = packet_is_right_eye(pkt);
+        //int is_right = packet_is_right_eye(pkt);
+        // int is_right = g_num & 1;
 
-        if (!is_right) {
+        //奇数 copy left
+        if (g_num & 1) {
             // ---- 这是左眼：先缓存，不参与解码 ----
             av_packet_unref(s->left_pkt);
             av_packet_ref(s->left_pkt, pkt);
@@ -515,7 +517,9 @@ static int avc3d_decode(AVCodecContext *avctx, void *frame, int *got_frame, AVPa
         }
 
         // ---- 这里是右眼：如果已经有左眼，则合帧 ----
-        if (s->has_left_pkt) {
+        //if (s->has_left_pkt) 
+        else
+        {
 
             // 生成一个新的“左右眼合成包” (AU)
             int merged_size = s->left_pkt->size + pkt->size;
