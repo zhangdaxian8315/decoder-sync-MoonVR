@@ -12,10 +12,12 @@ REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 # 需要复制到 VLC 的两个文件
 DECODER_LIB="libxavc3ddecoder.a"
 WRAPPER_FILE="avc3ddecoder.c"   # ← 你实际的名字替换这个
+API_FILE="ldecod_api.h"   # ← 你实际的名字替换这个
 
 # 文件在 VLC-Android 中的存放位置（根据你项目调整）
 VLC_DECODER_DIR="$VLC_ANDROID_DIR/libvlcjni/vlc/contrib/aarch64-linux-android/lib/"
 VLC_WRAPPER_DIR="$VLC_ANDROID_DIR/libvlcjni/vlc/contrib/contrib-android-aarch64-linux-android/ffmpeg/libavcodec/"
+VLC_API_DIR="$VLC_ANDROID_DIR/libvlcjni/vlc/contrib/contrib-android-aarch64-linux-android/ffmpeg/libavcodec/"
 
 # VLC 输出 AAR 的位置
 AAR_OUTPUT="$VLC_ANDROID_DIR/libvlcjni/libvlc/build/outputs/aar/libvlc-release.aar"
@@ -48,6 +50,7 @@ echo "=============================================="
 mkdir -p "$VLC_DECODER_DIR"
 cp "$REPO_DIR/$DECODER_LIB" "$VLC_DECODER_DIR/"
 cp "$REPO_DIR/$WRAPPER_FILE" "$VLC_WRAPPER_DIR/"
+cp "$REPO_DIR/$API_FILE" "$VLC_API_DIR/"
 
 echo "复制完成！"
 
