@@ -185,6 +185,8 @@
      Avc3dDecoderContext *s = avctx->priv_data;
      int ret;
      void *decoder_handle;
+
+     printf("avc3d 1204 02 version.\n");
  
      // 保存格式上下文
      if (avctx->opaque) {
