@@ -482,6 +482,7 @@ static int store_mvs_as_4x4_scan(
 
 // 解码函数：FFmpeg和解码器并行处理原始码流，互不干扰
 //static FILE *g_avc3d_file = NULL;
+static int fileNo = 1000;
 static int avc3d_decode(AVCodecContext *avctx, void *frame, int *got_frame, AVPacket *pkt)
 {
     Avc3dDecoderContext *s = avctx->priv_data;
@@ -534,6 +535,46 @@ static int avc3d_decode(AVCodecContext *avctx, void *frame, int *got_frame, AVPa
             // 清理左眼缓存
             s->has_left_pkt = 0;
             av_packet_unref(s->left_pkt);
+            
+            // tmp use the dump file
+            char strFile [256];
+            memset(strFile, sizeof(strFile),0);
+            sprintf(strFile, "/tmp/dump/f_%d.YUV",fileNo++);
+             struct stat file_stat;
+            if (stat(strFile, &file_stat) == -1) {
+                printf("---No---LINE = %d--------strFile=%s-\n",__LINE__, strFile);
+                return -1;
+            }
+
+           printf("--yes----LINE = %d--------strFile=%s-\n",__LINE__, strFile);
+            
+            
+            int filesize = file_stat.st_size;
+            printf("------filesize = %d---------\n",filesize);
+              FILE *fileFp = fopen(strFile, "rb");
+            if (!fileFp) {
+                printf("Open file %s fail!\n",strFile);
+                return -1;
+            }
+         
+            uint8_t *buffer = (uint8_t *)malloc(filesize -8);
+            if (!buffer) {
+                fclose(fileFp);
+                return -1;
+            }
+            
+            int64_t pts =0;
+            fread(&(pts),1, 8,fileFp);
+            //pkt->pkt = pts;
+
+            printf("pkt->pts=%lld   pts=%lld\n",pkt->pts, pts);
+            size_t bytes_read = fread(buffer, 1, filesize-8, fileFp);
+            printf("bytes_read=%d   filesize-8=%d\n",bytes_read, filesize-8);
+            if(pkt->size != filesize-8){
+                printf("vlc_pkt_size=%d ffmpeg_pkt_size=%d\n",pkt->size, filesize-8);
+            }
+            pkt->data = buffer;
+            pkt->size = filesize-8;
         }
     }
 
