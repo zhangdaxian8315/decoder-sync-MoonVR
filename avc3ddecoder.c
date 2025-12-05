@@ -186,7 +186,7 @@
      int ret;
      void *decoder_handle;
 
-     printf("avc3d 1204 02 version.\n");
+     printf("avc3d 1204 03 version.\n");
  
      // 保存格式上下文
      if (avctx->opaque) {
