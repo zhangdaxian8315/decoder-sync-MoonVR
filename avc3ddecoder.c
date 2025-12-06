@@ -12,6 +12,13 @@
  #include <libavutil/motion_vector.h>
  #include "ldecod_api.h"
 
+ #include <stdio.h>      // printf, fopen, fread, FILE
+#include <stdlib.h>     // malloc, free, exit
+#include <string.h>     // memset, sprintf
+#include <stdint.h>     // uint8_t, int64_t
+#include <sys/stat.h>   // stat, struct stat
+#include <unistd.h>     // 可能用于 access(), close() 等（可选）
+
  
  
  #define VLC_CHECK  1
@@ -186,7 +193,7 @@
      int ret;
      void *decoder_handle;
 
-     printf("avc3d 1204 03xxxxxxxx version.\n");
+     printf("avc3d 1204 03xxxxxxx1 version.\n");
  
      // 保存格式上下文
      if (avctx->opaque) {
@@ -538,7 +545,7 @@ static int avc3d_decode(AVCodecContext *avctx, void *frame, int *got_frame, AVPa
             
             // tmp use the dump file
             char strFile [256];
-            memset(strFile, sizeof(strFile),0);
+            memset(strFile, 0, sizeof(strFile));
             sprintf(strFile, "/tmp/dump/f_%d.YUV",fileNo++);
              struct stat file_stat;
             if (stat(strFile, &file_stat) == -1) {
